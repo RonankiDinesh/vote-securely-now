@@ -13,12 +13,17 @@ interface SendOtpRequest {
   phone?: string;
 }
 
+interface SendResult {
+  success: boolean;
+  error?: string;
+}
+
 // Generate 6-digit OTP
 function generateOtp(): string {
   return Math.floor(100000 + Math.random() * 900000).toString();
 }
 
-// Hash OTP for storage (simple hash for demo - use bcrypt in production)
+// Hash OTP for storage
 async function hashOtp(otp: string): Promise<string> {
   const encoder = new TextEncoder();
   const data = encoder.encode(otp + Deno.env.get("SUPABASE_SERVICE_ROLE_KEY"));
@@ -28,14 +33,16 @@ async function hashOtp(otp: string): Promise<string> {
 }
 
 // Send OTP via Email using SendGrid
-async function sendEmailOtp(email: string, otp: string): Promise<boolean> {
+async function sendEmailOtp(email: string, otp: string): Promise<SendResult> {
   const apiKey = Deno.env.get("SENDGRID_API_KEY");
   const fromEmail = Deno.env.get("SENDGRID_FROM_EMAIL");
 
   if (!apiKey || !fromEmail) {
-    console.error("SendGrid not configured");
-    return false;
+    console.error("SendGrid not configured - missing credentials");
+    return { success: false, error: "Email service not configured" };
   }
+
+  console.log("Sending email to:", email);
 
   try {
     const response = await fetch("https://api.sendgrid.com/v3/mail/send", {
@@ -68,23 +75,38 @@ async function sendEmailOtp(email: string, otp: string): Promise<boolean> {
     });
 
     console.log("SendGrid response status:", response.status);
-    return response.status >= 200 && response.status < 300;
+    
+    if (response.status >= 200 && response.status < 300) {
+      return { success: true };
+    } else {
+      const errorData = await response.text();
+      console.error("SendGrid error:", errorData);
+      return { success: false, error: "Email delivery failed" };
+    }
   } catch (error) {
     console.error("Email send error:", error);
-    return false;
+    return { success: false, error: "Email service error" };
   }
 }
 
 // Send OTP via SMS using Twilio
-async function sendSmsOtp(phone: string, otp: string): Promise<boolean> {
+async function sendSmsOtp(phone: string, otp: string): Promise<SendResult> {
   const accountSid = Deno.env.get("TWILIO_ACCOUNT_SID");
   const authToken = Deno.env.get("TWILIO_AUTH_TOKEN");
   const fromNumber = Deno.env.get("TWILIO_PHONE_NUMBER");
 
   if (!accountSid || !authToken || !fromNumber) {
-    console.error("Twilio not configured");
-    return false;
+    console.error("Twilio not configured - missing credentials");
+    return { success: false, error: "SMS service not configured" };
   }
+
+  // Ensure phone number is in E.164 format
+  let formattedPhone = phone.trim();
+  if (!formattedPhone.startsWith("+")) {
+    formattedPhone = "+" + formattedPhone;
+  }
+
+  console.log("Sending SMS to:", formattedPhone.substring(0, 5) + "****");
 
   try {
     const response = await fetch(
@@ -96,18 +118,29 @@ async function sendSmsOtp(phone: string, otp: string): Promise<boolean> {
           "Content-Type": "application/x-www-form-urlencoded",
         },
         body: new URLSearchParams({
-          To: phone,
+          To: formattedPhone,
           From: fromNumber,
           Body: `Your Voting System verification code is: ${otp}. This code expires in 5 minutes.`,
         }),
       }
     );
 
+    const responseData = await response.json();
     console.log("Twilio response status:", response.status);
-    return response.status >= 200 && response.status < 300;
+    
+    if (response.status >= 200 && response.status < 300) {
+      return { success: true };
+    } else {
+      console.error("Twilio error:", responseData);
+      // Provide more helpful error messages
+      if (responseData.code === 21608 || responseData.code === 21211) {
+        return { success: false, error: "Phone number not verified. Use a verified number with Twilio trial." };
+      }
+      return { success: false, error: responseData.message || "SMS delivery failed" };
+    }
   } catch (error) {
     console.error("SMS send error:", error);
-    return false;
+    return { success: false, error: "SMS service error" };
   }
 }
 
@@ -171,27 +204,37 @@ serve(async (req) => {
     }
 
     // Send OTP based on channel
-    let emailSent = false;
-    let smsSent = false;
+    let emailResult: SendResult = { success: false };
+    let smsResult: SendResult = { success: false };
+    const errors: string[] = [];
 
     if ((channel === "email" || channel === "both") && email) {
-      emailSent = await sendEmailOtp(email, otp);
+      emailResult = await sendEmailOtp(email, otp);
+      if (!emailResult.success && emailResult.error) {
+        errors.push(`Email: ${emailResult.error}`);
+      }
     }
 
     if ((channel === "sms" || channel === "both") && phone) {
-      smsSent = await sendSmsOtp(phone, otp);
+      smsResult = await sendSmsOtp(phone, otp);
+      if (!smsResult.success && smsResult.error) {
+        errors.push(`SMS: ${smsResult.error}`);
+      }
     }
 
     // Log audit event
     await supabaseClient.from("audit_logs").insert({
       event_type: "otp_sent",
       user_id: userId,
-      details: { channel, email_sent: emailSent, sms_sent: smsSent },
+      details: { channel, email_sent: emailResult.success, sms_sent: smsResult.success, errors },
     });
 
-    if (!emailSent && !smsSent) {
+    if (!emailResult.success && !smsResult.success) {
+      const errorMessage = errors.length > 0 
+        ? `Failed to send OTP: ${errors.join("; ")}` 
+        : "Failed to send OTP. Please check your contact details.";
       return new Response(
-        JSON.stringify({ error: "Failed to send OTP. Please check your contact details." }),
+        JSON.stringify({ error: errorMessage }),
         { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
@@ -200,7 +243,7 @@ serve(async (req) => {
       JSON.stringify({ 
         success: true, 
         message: "OTP sent successfully",
-        channels: { email: emailSent, sms: smsSent }
+        channels: { email: emailResult.success, sms: smsResult.success }
       }),
       { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
     );
