@@ -3,12 +3,17 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { useAuth } from '@/lib/auth-context';
 import { useNavigate } from 'react-router-dom';
-import { useEffect } from 'react';
-import { Vote, Calendar, Clock, CheckCircle } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { Vote, Calendar, Clock, CheckCircle, ShieldAlert } from 'lucide-react';
+import { OtpVerification } from '@/components/OtpVerification';
+import { supabase } from '@/integrations/supabase/client';
 
 const Dashboard = () => {
-  const { user, loading } = useAuth();
+  const { user, loading, refreshSession } = useAuth();
   const navigate = useNavigate();
+  const [isVerified, setIsVerified] = useState<boolean | null>(null);
+  const [userProfile, setUserProfile] = useState<{ email: string; phone: string | null } | null>(null);
+  const [showOtpVerification, setShowOtpVerification] = useState(false);
 
   useEffect(() => {
     if (!loading && !user) {
@@ -16,11 +21,54 @@ const Dashboard = () => {
     }
   }, [user, loading, navigate]);
 
+  // Check if user is verified and get profile
+  useEffect(() => {
+    const checkVerification = async () => {
+      if (!user) return;
+
+      const { data: profile, error } = await supabase
+        .from('profiles')
+        .select('verified, email, phone')
+        .eq('id', user.id)
+        .single();
+
+      if (!error && profile) {
+        setIsVerified(profile.verified ?? false);
+        setUserProfile({ email: profile.email, phone: profile.phone });
+      }
+    };
+
+    checkVerification();
+  }, [user]);
+
+  const handleVerified = async () => {
+    setIsVerified(true);
+    setShowOtpVerification(false);
+    await refreshSession();
+  };
+
   if (loading) {
     return (
       <Layout>
         <div className="container py-12 flex items-center justify-center min-h-[60vh]">
           <div className="animate-pulse text-muted-foreground">Loading...</div>
+        </div>
+      </Layout>
+    );
+  }
+
+  // Show OTP verification modal
+  if (showOtpVerification && user && userProfile) {
+    return (
+      <Layout>
+        <div className="container py-12 flex items-center justify-center min-h-[60vh]">
+          <OtpVerification
+            userId={user.id}
+            email={userProfile.email}
+            phone={userProfile.phone ?? undefined}
+            onVerified={handleVerified}
+            onSkip={() => setShowOtpVerification(false)}
+          />
         </div>
       </Layout>
     );
@@ -54,6 +102,24 @@ const Dashboard = () => {
   return (
     <Layout>
       <div className="container py-8 lg:py-12">
+        {/* Verification banner */}
+        {isVerified === false && (
+          <Card className="mb-6 border-warning/30 bg-warning/5">
+            <CardContent className="py-4 flex items-center justify-between gap-4 flex-wrap">
+              <div className="flex items-center gap-3">
+                <ShieldAlert className="h-5 w-5 text-warning" />
+                <div>
+                  <p className="font-medium">Verify your identity to vote</p>
+                  <p className="text-sm text-muted-foreground">Complete OTP verification to participate in elections</p>
+                </div>
+              </div>
+              <Button onClick={() => setShowOtpVerification(true)}>
+                Verify Now
+              </Button>
+            </CardContent>
+          </Card>
+        )}
+
         <div className="mb-8">
           <h1 className="text-3xl font-display font-bold mb-2">Elections</h1>
           <p className="text-muted-foreground">View and participate in active elections</p>
@@ -87,9 +153,13 @@ const Dashboard = () => {
                   <Button 
                     className="w-full" 
                     variant={election.status === 'active' ? 'hero' : 'secondary'}
-                    disabled={election.status !== 'active'}
+                    disabled={election.status !== 'active' || isVerified === false}
                   >
-                    {election.status === 'active' ? 'Vote Now' : election.status === 'upcoming' ? 'Coming Soon' : 'View Results'}
+                    {election.status === 'active' 
+                      ? (isVerified === false ? 'Verify to Vote' : 'Vote Now') 
+                      : election.status === 'upcoming' 
+                        ? 'Coming Soon' 
+                        : 'View Results'}
                   </Button>
                 </CardContent>
               </Card>
