@@ -2,11 +2,24 @@ import { Layout } from '@/components/layout/Layout';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { useAuth } from '@/lib/auth-context';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, Link } from 'react-router-dom';
 import { useEffect, useState } from 'react';
-import { Vote, Calendar, Clock, CheckCircle, ShieldAlert } from 'lucide-react';
+import { Vote, Calendar, Clock, CheckCircle, ShieldAlert, Loader2 } from 'lucide-react';
 import { OtpVerification } from '@/components/OtpVerification';
 import { supabase } from '@/integrations/supabase/client';
+
+interface Election {
+  id: string;
+  title: string;
+  description: string | null;
+  status: 'draft' | 'active' | 'upcoming' | 'ended';
+  start_time: string;
+  end_time: string;
+}
+
+interface VotedElection {
+  election_id: string;
+}
 
 const Dashboard = () => {
   const { user, loading, refreshSession } = useAuth();
@@ -14,6 +27,9 @@ const Dashboard = () => {
   const [isVerified, setIsVerified] = useState<boolean | null>(null);
   const [userProfile, setUserProfile] = useState<{ email: string; phone: string | null } | null>(null);
   const [showOtpVerification, setShowOtpVerification] = useState(false);
+  const [elections, setElections] = useState<Election[]>([]);
+  const [votedElections, setVotedElections] = useState<string[]>([]);
+  const [isLoadingElections, setIsLoadingElections] = useState(true);
 
   useEffect(() => {
     if (!loading && !user) {
@@ -39,6 +55,43 @@ const Dashboard = () => {
     };
 
     checkVerification();
+  }, [user]);
+
+  // Fetch elections and user's voted elections
+  useEffect(() => {
+    const fetchElections = async () => {
+      if (!user) return;
+
+      setIsLoadingElections(true);
+      try {
+        // Fetch elections (active, upcoming, ended)
+        const { data: electionsData, error: electionsError } = await supabase
+          .from('elections')
+          .select('id, title, description, status, start_time, end_time')
+          .in('status', ['active', 'upcoming', 'ended'])
+          .order('start_time', { ascending: false });
+
+        if (!electionsError && electionsData) {
+          setElections(electionsData);
+        }
+
+        // Fetch user's votes
+        const { data: votesData } = await supabase
+          .from('votes')
+          .select('election_id')
+          .eq('user_id', user.id);
+
+        if (votesData) {
+          setVotedElections(votesData.map(v => v.election_id));
+        }
+      } catch (error) {
+        console.error('Error fetching elections:', error);
+      } finally {
+        setIsLoadingElections(false);
+      }
+    };
+
+    fetchElections();
   }, [user]);
 
   const handleVerified = async () => {
@@ -74,13 +127,6 @@ const Dashboard = () => {
     );
   }
 
-  // Demo elections for display
-  const elections = [
-    { id: '1', title: 'Student Council President 2025', status: 'active', startTime: '2025-01-01', endTime: '2025-01-15', candidateCount: 4 },
-    { id: '2', title: 'Department Representative', status: 'upcoming', startTime: '2025-02-01', endTime: '2025-02-10', candidateCount: 3 },
-    { id: '3', title: 'Club Treasurer', status: 'ended', startTime: '2024-12-01', endTime: '2024-12-10', candidateCount: 2 },
-  ];
-
   const getStatusColor = (status: string) => {
     switch (status) {
       case 'active': return 'bg-success/10 text-success border-success/20';
@@ -98,6 +144,16 @@ const Dashboard = () => {
       default: return Calendar;
     }
   };
+
+  const formatDate = (dateString: string) => {
+    return new Date(dateString).toLocaleDateString('en-US', {
+      month: 'short',
+      day: 'numeric',
+      year: 'numeric',
+    });
+  };
+
+  const hasVoted = (electionId: string) => votedElections.includes(electionId);
 
   return (
     <Layout>
@@ -125,49 +181,78 @@ const Dashboard = () => {
           <p className="text-muted-foreground">View and participate in active elections</p>
         </div>
 
-        <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-3">
-          {elections.map((election) => {
-            const StatusIcon = getStatusIcon(election.status);
-            return (
-              <Card key={election.id} variant="interactive">
-                <CardHeader className="pb-3">
-                  <div className="flex items-start justify-between gap-2">
-                    <CardTitle className="text-lg leading-tight">{election.title}</CardTitle>
-                    <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium border ${getStatusColor(election.status)}`}>
-                      <StatusIcon className="h-3 w-3" />
-                      {election.status.charAt(0).toUpperCase() + election.status.slice(1)}
-                    </span>
-                  </div>
-                </CardHeader>
-                <CardContent>
-                  <div className="space-y-3 text-sm text-muted-foreground mb-4">
-                    <div className="flex items-center gap-2">
-                      <Calendar className="h-4 w-4" />
-                      <span>{election.startTime} - {election.endTime}</span>
+        {isLoadingElections ? (
+          <div className="flex items-center justify-center py-12">
+            <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+          </div>
+        ) : (
+          <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-3">
+            {elections.map((election) => {
+              const StatusIcon = getStatusIcon(election.status);
+              const userHasVoted = hasVoted(election.id);
+              return (
+                <Card key={election.id} variant="interactive">
+                  <CardHeader className="pb-3">
+                    <div className="flex items-start justify-between gap-2">
+                      <CardTitle className="text-lg leading-tight">{election.title}</CardTitle>
+                      <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium border ${getStatusColor(election.status)}`}>
+                        <StatusIcon className="h-3 w-3" />
+                        {election.status.charAt(0).toUpperCase() + election.status.slice(1)}
+                      </span>
                     </div>
-                    <div className="flex items-center gap-2">
-                      <Vote className="h-4 w-4" />
-                      <span>{election.candidateCount} candidates</span>
+                  </CardHeader>
+                  <CardContent>
+                    <div className="space-y-3 text-sm text-muted-foreground mb-4">
+                      <div className="flex items-center gap-2">
+                        <Calendar className="h-4 w-4" />
+                        <span>{formatDate(election.start_time)} - {formatDate(election.end_time)}</span>
+                      </div>
+                      {userHasVoted && election.status === 'active' && (
+                        <div className="flex items-center gap-2 text-success">
+                          <CheckCircle className="h-4 w-4" />
+                          <span>You have voted</span>
+                        </div>
+                      )}
                     </div>
-                  </div>
-                  <Button 
-                    className="w-full" 
-                    variant={election.status === 'active' ? 'hero' : 'secondary'}
-                    disabled={election.status !== 'active' || isVerified === false}
-                  >
-                    {election.status === 'active' 
-                      ? (isVerified === false ? 'Verify to Vote' : 'Vote Now') 
-                      : election.status === 'upcoming' 
-                        ? 'Coming Soon' 
-                        : 'View Results'}
-                  </Button>
-                </CardContent>
-              </Card>
-            );
-          })}
-        </div>
+                    {election.status === 'active' ? (
+                      userHasVoted ? (
+                        <Button className="w-full" variant="secondary" disabled>
+                          <CheckCircle className="h-4 w-4 mr-2" />
+                          Vote Cast
+                        </Button>
+                      ) : isVerified === false ? (
+                        <Button 
+                          className="w-full" 
+                          variant="secondary"
+                          onClick={() => setShowOtpVerification(true)}
+                        >
+                          Verify to Vote
+                        </Button>
+                      ) : (
+                        <Link to={`/vote/${election.id}`}>
+                          <Button className="w-full" variant="hero">
+                            <Vote className="h-4 w-4 mr-2" />
+                            Vote Now
+                          </Button>
+                        </Link>
+                      )
+                    ) : election.status === 'upcoming' ? (
+                      <Button className="w-full" variant="secondary" disabled>
+                        Coming Soon
+                      </Button>
+                    ) : (
+                      <Button className="w-full" variant="secondary" disabled>
+                        View Results
+                      </Button>
+                    )}
+                  </CardContent>
+                </Card>
+              );
+            })}
+          </div>
+        )}
 
-        {elections.length === 0 && (
+        {!isLoadingElections && elections.length === 0 && (
           <Card className="text-center py-12">
             <CardContent>
               <Vote className="h-12 w-12 mx-auto text-muted-foreground/50 mb-4" />

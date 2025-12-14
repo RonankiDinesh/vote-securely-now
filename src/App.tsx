@@ -7,6 +7,8 @@ import { AuthProvider } from "@/lib/auth-context";
 import Index from "./pages/Index";
 import Auth from "./pages/Auth";
 import Dashboard from "./pages/Dashboard";
+import VotePage from "./pages/Vote";
+import VoteReceiptPage from "./pages/VoteReceipt";
 import NotFound from "./pages/NotFound";
 
 const queryClient = new QueryClient();
@@ -22,6 +24,8 @@ const App = () => (
             <Route path="/" element={<Index />} />
             <Route path="/auth" element={<Auth />} />
             <Route path="/dashboard" element={<Dashboard />} />
+            <Route path="/vote/:electionId" element={<VotePage />} />
+            <Route path="/vote/:electionId/receipt" element={<VoteReceiptPage />} />
             <Route path="*" element={<NotFound />} />
           </Routes>
         </BrowserRouter>
